@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chia sẻ màn hình với WebRTC</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.min.js"></script>
+</head>
+<body>
+    <h1>Chia sẻ màn hình với WebRTC</h1>
+    <input id="username" placeholder="Tên của bạn">
+    <input id="room" placeholder="Tên phòng">
+    <button onclick="joinRoom()">Tham gia phòng</button>
+    <button onclick="startScreenSharing()">Bắt đầu chia sẻ màn hình</button>
+    <p id="notification"></p>
+    <video id="localVideo" autoplay muted style="width: 45%; border: 1px solid black;"></video>
+    <video id="remoteVideo" autoplay style="width: 45%; border: 1px solid black;"></video>
+
+    <script>
+        const socket = io.connect(window.location.origin);
+        let localStream;
+        let peerConnection;
+        const configuration = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' }
+            ]
+        };
+
+        function joinRoom() {
+            const username = document.getElementById("username").value;
+            const room = document.getElementById("room").value;
+            socket.emit('join', { username, room });
+            document.getElementById("notification").innerText = `Đã tham gia phòng ${room}`;
+        }
+
+        socket.on('message', (data) => {
+            const notification = document.getElementById("notification");
+            notification.innerText = data.msg;
+        });
+
+        async function startScreenSharing() {
+            try {
+                // Yêu cầu chia sẻ màn hình
+                localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+                document.getElementById("localVideo").srcObject = localStream;
+
+                createPeerConnection();
+
+                // Thêm stream màn hình vào kết nối WebRTC
+                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+                
+                // Tạo offer và gửi đi qua signaling server
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                socket.emit('offer-sending', { offer: offer, room: document.getElementById("room").value });
+            } catch (err) {
+                console.error("Không thể chia sẻ màn hình:", err);
+            }
+        }
+
+        function createPeerConnection() {
+            peerConnection = new RTCPeerConnection(configuration);
+
+            // Khi nhận được track từ remote, hiển thị nó
+            peerConnection.ontrack = (event) => {
+                document.getElementById("remoteVideo").srcObject = event.streams[0];
+            };
+
+            // Khi có ICE candidate, gửi qua signaling server
+            peerConnection.onicecandidate = ({ candidate }) => {
+                if (candidate) {
+                    socket.emit('ice-candidate-sending', { candidate: candidate, room: document.getElementById("room").value });
+                }
+            };
+        }
+
+        // Nhận offer từ signaling server
+        socket.on('offer-sending', async (offer) => {
+            if (!peerConnection) createPeerConnection();
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            socket.emit('answer-receiving', { answer: answer, room: document.getElementById("room").value });
+        });
+
+        // Nhận answer từ signaling server
+        socket.on('answer-sending', async (answer) => {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        });
+
+        // Nhận ICE candidate từ signaling server
+        socket.on('ice-candidate-sending', async (candidate) => {
+            try {
+                await peerConnection.addIceCandidate(candidate);
+            } catch (e) {
+                console.error("Không thể thêm ICE candidate:", e);
+            }
+        });
+    </script>
+</body>
+</html>
